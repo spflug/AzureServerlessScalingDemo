@@ -10,37 +10,97 @@ using OfficeOpenXml;
 using OfficeOpenXml.Style;
 using TestConsole;
 
-const string appServiceUrl = "https://as-serverlessworkshop.azurewebsites.net/api/prime/between/1000/10000";
-const string functionConsumption = "https://fa-consumption-serverlessworkshop.azurewebsites.net/api/between/1000/10000?code=i4TF0aqfYUL5bSfJL4Qg1gXXl9g03HLKp1Ap3jtPWjMHaJtxJvjWHA==";
-const string functionDedicated = "https://fa-dedicated-serverlessworkshop.azurewebsites.net/api/between/1000/10000?code=EzonZL5GDhbP1aQ/ey/tY10R43xCJCc8Wfv7VfpQdwCR0ZChpDWCew==";
+const string appServiceUrlFormat = "https://as-serverlessworkshop.azurewebsites.net/api/prime/between/{0}/{1}";
+const string consumptionFormat = "https://fa-consumption-serverlessworkshop.azurewebsites.net/api/between/{0}/{1}?code=i4TF0aqfYUL5bSfJL4Qg1gXXl9g03HLKp1Ap3jtPWjMHaJtxJvjWHA==";
+const string dedicatedFormat = "https://fa-dedicated-serverlessworkshop.azurewebsites.net/api/between/{0}/{1}?code=EzonZL5GDhbP1aQ/ey/tY10R43xCJCc8Wfv7VfpQdwCR0ZChpDWCew==";
 
 var results = new Dictionary<int, Dictionary<string, List<Measurement>>>();
 
-Console.WriteLine("Input the amount of requests or 'exit' to quit:");
-while (true)
+var config = default(Config?);
+while ((config = ReadConfig()) is not null)
 {
-    var input = Console.ReadLine()?.Trim();
-    if (int.TryParse(input?.Trim(), out var count))
+    Console.WriteLine(config);
+    Console.WriteLine();
+    Console.WriteLine("Input the amount of requests or 'exit' to quit:");
+    while (true)
     {
-        await Measure(appServiceUrl, count);
-        await Measure(functionConsumption, count);
-        await Measure(functionDedicated, count);
+        var input = Console.ReadLine()?.Trim();
+        if (int.TryParse(input?.Trim(), out var count))
+        {
+            if(config.Targets.Contains(TestTarget.AppService))
+                await Measure(TestTarget.AppService, string.Format(appServiceUrlFormat, config.LowerBound, config.UpperBound), count, ConsoleColor.Cyan);
 
-        Console.WriteLine("\nInput another amount or 'exit' to quit:");
-        continue;
+            if (config.Targets.Contains(TestTarget.Consumption))
+                await Measure(TestTarget.Consumption, string.Format(consumptionFormat, config.LowerBound, config.UpperBound), count, ConsoleColor.Yellow);
+
+            if (config.Targets.Contains(TestTarget.DedicatedPlan))
+                await Measure(TestTarget.DedicatedPlan, string.Format(dedicatedFormat, config.LowerBound, config.UpperBound), count, ConsoleColor.Green);
+
+            Console.WriteLine("\nInput another amount or 'exit' to quit:");
+            continue;
+        }
+
+        if (input is not null && input.Equals("exit", StringComparison.OrdinalIgnoreCase))
+        {
+            CreateExcel();
+            break;
+        }
+
+        Console.WriteLine("Input should be a valid integer or 'exit' to quit the program");
     }
+}
 
-    if (input is not null && input.Equals("exit", StringComparison.OrdinalIgnoreCase))
+static void Write(ConsoleColor color, string message) => Print(color, message, Console.Write);
+static void WriteLine(ConsoleColor color, string message) => Print(color, message, Console.WriteLine);
+
+static void Print(ConsoleColor color, string message, Action<object> print)
+{
+    var c = Console.ForegroundColor;
+    Console.ForegroundColor = color;
+    print(message);
+    Console.ForegroundColor = c;
+}
+
+static Config? ReadConfig()
+{
+    var targets = new List<TestTarget>();
+    Console.WriteLine("Choose your specifications:");
+    Console.WriteLine("Target the AppService?");
+    if (ReadBool()) targets.Add(TestTarget.AppService);
+    Console.WriteLine("\nTarget the consumption function?");
+    if (ReadBool()) targets.Add(TestTarget.Consumption);
+    Console.WriteLine("\nTarget the function with dedicated app service plan?");
+    if (ReadBool()) targets.Add(TestTarget.DedicatedPlan);
+    Console.WriteLine("\nInput a lower bound:");
+    var lower = ReadInt();
+    if (lower is null) return null;
+    Console.WriteLine("Input an upper bound:");
+    var upper = ReadInt();
+    return upper is null
+        ? null
+        : new Config(lower.Value, upper.Value, targets.ToArray());
+
+    static int? ReadInt()
     {
-        CreateExcel();
-        return;
+        while (true)
+        {
+            var line = Console.ReadLine()?.Trim() ?? string.Empty;
+            if (int.TryParse(line, out var i)) return i;
+            if (line.Equals("exit", StringComparison.OrdinalIgnoreCase)) return null;
+            WriteLine(ConsoleColor.Red, "Input is not numeric. Input a number or 'exit'.");
+        }
     }
-
-    Console.WriteLine("Input should be a valid integer or 'exit' to quit the program");
+    static bool ReadBool() => Console.ReadKey() switch
+    {
+        { KeyChar: 'y' } => true,
+        { KeyChar: 'Y' } => true,
+        _ => false
+    };
 }
 
 void CreateExcel()
 {
+    if (results.Count == 0) return;
     var culture = CultureInfo.CreateSpecificCulture("de-DE");
     var pattern = DateTimeFormatInfo.GetInstance(culture).LongTimePattern + ".fffffff";
     var file = new FileInfo(Path.GetTempFileName());
@@ -96,7 +156,7 @@ void CreateExcel()
     Process.Start("C:\\Program Files (x86)\\Microsoft Office\\root\\Office16\\EXCEL.EXE", file.FullName);
 }
 
-async Task Measure(string url, int numberOfRequests)
+async Task Measure(TestTarget target, string url, int numberOfRequests, ConsoleColor color)
 {
     var uri = new Uri(url);
     if (!results.ContainsKey(numberOfRequests))
@@ -114,17 +174,17 @@ async Task Measure(string url, int numberOfRequests)
     
     const char c = '#';
 
-    Console.WriteLine($"Measuring {numberOfRequests} calls to {uri.Host}\n{new string(c, 82)}");
+    WriteLine(color, $"Measuring {numberOfRequests} calls to {target}\n{new string(c, 82)}");
 
     var tasks = BulkCall(uri, numberOfRequests).ToArray();
     await Task.WhenAll(tasks);
     foreach (var measurement in tasks)
     {
         var m = await measurement;
-        Console.WriteLine(m);
+        WriteLine(color, m.ToString());
         results[numberOfRequests][url].Add(m);
     }
-    Console.WriteLine($"{new string(c, 82)}\n");
+    WriteLine(color, $"{new string(c, 82)}\n");
 }
 
 static IEnumerable<Task<Measurement>> BulkCall(Uri uri, int bulkSize)
@@ -156,5 +216,14 @@ namespace TestConsole
         public TimeSpan Delay = SendAt - CalledAt;
         public override string ToString() =>
             $"{Index,+3:D} {CalledAt:HH:mm:ss.fffffff} {SendAt:HH:mm:ss.fffffff} Delay: {Delay:ss\\.fffffff} Elapsed: {Elapsed:mm\\:ss\\.fffffff}";
+    }
+
+    public record Config(int LowerBound, int UpperBound, params TestTarget[] Targets);
+
+    public enum TestTarget
+    {
+        AppService = 1,
+        Consumption = 2,
+        DedicatedPlan = 3
     }
 }
